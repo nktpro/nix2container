@@ -65,25 +65,45 @@ func getPaths(storePaths []string, parents []types.Layer, rewrites []types.Rewri
 // the disk. This is useful for layer containing non reproducible
 // store paths.
 func newLayers(paths types.Paths, tarDirectory string, maxLayers int, history v1.History) (layers []types.Layer, err error) {
-	offset := 0
-	for offset < len(paths) {
-		max := offset + 1
-		if offset == maxLayers-1 {
-			max = len(paths)
+	totalPaths := len(paths)
+	if totalPaths == 0 {
+		return nil, nil
+	}
+
+	var layerGroups []types.Paths
+
+	if totalPaths <= maxLayers {
+		// If paths are fewer than or equal to maxLayers, each path is its own layer.
+		for _, path := range paths {
+			layerGroups = append(layerGroups, types.Paths{path})
 		}
-		layerPaths := paths[offset:max]
+	} else {
+		// Bundle the topmost layers first
+		layerGroups = append(layerGroups, paths[:totalPaths-maxLayers+1])
+
+		// Keep the bottom maxLayers-1 layers separate
+		for i := totalPaths - maxLayers + 1; i < totalPaths; i++ {
+			layerGroups = append(layerGroups, types.Paths{paths[i]})
+		}
+	}
+
+	// Process layers in order
+	for _, layerPaths := range layerGroups {
 		layerPath := ""
 		var digest godigest.Digest
 		var size int64
+
 		if tarDirectory == "" {
 			digest, size, err = TarPathsSum(layerPaths)
 		} else {
-			layerPath, digest, size, err = TarPathsWrite(paths, tarDirectory)
+			layerPath, digest, size, err = TarPathsWrite(layerPaths, tarDirectory)
 		}
 		if err != nil {
-			return layers, err
+			return nil, err
 		}
+
 		logrus.Infof("Adding %d paths to layer (size:%d digest:%s)", len(layerPaths), size, digest.String())
+
 		layer := types.Layer{
 			Digest:    digest.String(),
 			DiffIDs:   digest.String(),
@@ -92,6 +112,7 @@ func newLayers(paths types.Paths, tarDirectory string, maxLayers int, history v1
 			MediaType: v1.MediaTypeImageLayer,
 			History:   history,
 		}
+
 		if tarDirectory != "" {
 			// TODO: we should use v1.MediaTypeImageLayerGzip instead
 			layer.MediaType = v1.MediaTypeImageLayer
@@ -99,9 +120,8 @@ func newLayers(paths types.Paths, tarDirectory string, maxLayers int, history v1
 		}
 
 		layers = append(layers, layer)
-
-		offset = max
 	}
+
 	return layers, nil
 }
 
